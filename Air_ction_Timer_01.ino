@@ -400,7 +400,7 @@ void handleStandby() {
                 display.println(F("Zz"));
                 display.setTextSize(1);
                 display.setCursor(35, 45);
-                display.println(F("Modo reposo"));
+                display.println(F("Display off"));
             }
             display.display();
             visible = !visible;

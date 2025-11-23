@@ -29,7 +29,7 @@ volatile bool finished = false;
 volatile bool wifiActive = false;
 volatile bool screenActive = true;
 
-// 🆕 VARIABLE PARA RETARDO DE INICIO
+// VARIABLE PARA RETARDO DE INICIO
 volatile bool countdownActive = false;
 uint32_t countdownStartTime = 0;
 const uint32_t COUNTDOWN_DELAY_MS = 2000; // 2 segundos
@@ -213,7 +213,7 @@ void showWelcomeScreen() {
   delay(2000);
 }
 
-// 🆕 FUNCIÓN PARA MOSTRAR CUENTA REGRESIVA
+// FUNCIÓN PARA MOSTRAR CUENTA REGRESIVA
 void showCountdownScreen() {
   display.clearDisplay();
   
@@ -268,9 +268,13 @@ void showStatusScreen(float s, bool showTime) {
   // Contenido principal
   if (showTime && s >= 0) {
     display.setTextSize(2);
-    display.setCursor(25, 25);
-    display.print(s, 2);
-    display.print(F(" s"));
+    display.setCursor(20, 20);
+    
+    // MOSTRAR SOLO 2 DECIMALES
+    char timeStr[16];
+    snprintf(timeStr, sizeof(timeStr), "%.2f s", s);
+    display.print(timeStr);
+    
     display.setTextSize(1);
     display.setCursor(20, 50);
     display.println(F("Hold to restart"));
@@ -278,7 +282,12 @@ void showStatusScreen(float s, bool showTime) {
     float t = (micros() - t0_us) / 1000000.0f;
     display.setTextSize(3);
     display.setCursor(15, 20);
-    display.print(t, 1);
+    
+    // MOSTRAR SOLO 1 DECIMAL MIENTRAS CORRE
+    char timeStr[16];
+    snprintf(timeStr, sizeof(timeStr), "%.1f", t);
+    display.print(timeStr);
+    
     display.setTextSize(1);
     display.setCursor(95, 25);
     display.print(F("s"));
@@ -307,7 +316,7 @@ float readBatteryPercent() {
   return batteryPercent;
 }
 
-// 🆕 FUNCIÓN toneStart CORREGIDA
+// FUNCIÓN toneStart CORREGIDA
 void toneStart(int freq, int ms) {
   // ALTERNATIVA SIMPLE PARA BUZZER PASIVO
   if (freq == 0) {
@@ -335,6 +344,8 @@ void sendSync() {
   udp.beginPacket(IPAddress(255,255,255,255), PORT);
   udp.write((uint8_t*)buf, strlen(buf));
   udp.endPacket();
+  
+  Serial.printf("⏱️ SYNC ENVIADO - t0_us: %lu\n", t0_us);
 }
 
 void drawProgressBar(uint32_t duration) {
@@ -424,7 +435,7 @@ void startStage() {
   }
   sendSync();
   
-  // 🆕 INICIAR CONTADOR REGRESIVO SIN PITIDOS
+  // INICIAR CONTADOR REGRESIVO SIN PITIDOS
   countdownActive = true;
   countdownStartTime = millis();
   lastInteraction = millis();
@@ -437,8 +448,12 @@ void startStage() {
 void stopStage(uint32_t t_hit) {
   running = false;
   finished = true;
+  
+  // CALCULAR TIEMPO FINAL
   float s = (t_hit - t0_us) / 1000000.0f;
   lastStopTime = s;
+  
+  Serial.printf("⏹️ STOP STAGE - Tiempo final: %.2f segundos\n", s);
   showStatusScreen(s, true);
 }
 
@@ -452,7 +467,7 @@ void resetStage() {
   }
   wifiActive = false;
   
-  // 🆕 SONIDOS ORIGINALES DEL RESET
+  // SONIDOS ORIGINALES DEL RESET
   toneStart(1000, 80); 
   delay(80);
   toneStart(1500, 80);
@@ -515,7 +530,7 @@ void handleStandby() {
 void loop() {
     uint32_t currentTime = millis();
     
-    // 🆕 VERIFICAR SI ESTAMOS EN CUENTA REGRESIVA
+    // VERIFICAR SI ESTAMOS EN CUENTA REGRESIVA
     if (countdownActive) {
         uint32_t elapsed = currentTime - countdownStartTime;
         
@@ -525,13 +540,13 @@ void loop() {
             showCountdownScreen();
         }
         
-        // 🆕 CUANDO TERMINA LA CUENTA REGRESIVA, INICIAR EL STAGE CON PITIDO
+        // CUANDO TERMINA LA CUENTA REGRESIVA, INICIAR EL STAGE CON PITIDO
         if (elapsed >= COUNTDOWN_DELAY_MS) {
             countdownActive = false;
             running = true;
             t0_us = micros();
             lastUpdate = currentTime;
-            toneStart(2000, 200); // 🆕 PITIDO DE INICIO DE STAGE
+            toneStart(2000, 200); // PITIDO DE INICIO DE STAGE
             Serial.println("🚀 CRONÓMETRO INICIADO!");
         }
         
@@ -567,31 +582,33 @@ void loop() {
         if (len > 0) {
             msg[len] = '\0';
             
-            // DEPURACIÓN
             Serial.printf("📦 PAQUETE RECIBIDO: %s\n", msg);
             
             if (strncmp(msg, "HIT:", 4) == 0 && running && !finished) {
                 char* p = msg + 4;
                 int id = atoi(strtok(p, ":"));
-                uint32_t t_hit = strtoul(strtok(NULL, ":"), nullptr, 10);
+                // 🆕 IGNORAMOS EL TIEMPO DEL CLIENTE, SOLO NECESITAMOS EL SEQ
+                strtok(NULL, ":"); // Saltar el tiempo del cliente
                 uint16_t seq = atoi(strtok(NULL, ":"));
-                float s = (t_hit - t0_us) / 1000000.0f;
                 
-                Serial.printf("🎯 HIT PROCESADO - ID: %d, Tiempo: %.3f s\n", id, s);
+                // 🆕 USAR EL TIEMPO ACTUAL DEL ESP32 (IGUAL QUE EL BOTÓN)
+                uint32_t current_time = micros();
+                float s = (current_time - t0_us) / 1000000.0f;
+                
+                Serial.printf("🎯 HIT RECIBIDO - ID: %d, Tiempo: %.2f s\n", id, s);
                 showStatusScreen(s, true);
                 
-                // 🆕 PITIDOS DIFERENCIADOS SEGÚN EL ID
+                // PITIDOS DIFERENCIADOS SEGÚN EL ID
                 if (id == 99) {
-                    // STOP PLATE - Pitido especial
                     toneStart(1800, 300);
                     Serial.println("🛑 STOP PLATE - Stage finalizado");
                 } else {
-                    // HIT NORMAL - Pitido normal
                     toneStart(1500, 150);
                     Serial.printf("🎯 HIT RECIBIDO - ID %d\n", id);
                 }
                 
-                stopStage(t_hit);
+                // 🆕 PARAR CON EL TIEMPO ACTUAL (IGUAL QUE EL BOTÓN)
+                stopStage(current_time);
                 
                 // Enviar ACK
                 char ack[16];

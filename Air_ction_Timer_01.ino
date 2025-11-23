@@ -17,10 +17,7 @@ WiFiUDP udp;
 const uint16_t PORT = 4210;
 
 const int PIN_BUZZER = 25;
-// 🔧 CORRECCIÓN: Probamos diferentes pines para el botón BOOT
-const int PIN_START = 0;    // GPIO 0 - Botón BOOT (probemos este primero)
-// const int PIN_START = 2;  // Alternativa si GPIO 0 no funciona
-// const int PIN_START = 4;  // Otra alternativa
+const int PIN_START = 0;
 const int PIN_BATTERY = 36;
 const int STOP_ID = 99;
 
@@ -31,6 +28,11 @@ volatile bool running = false;
 volatile bool finished = false;
 volatile bool wifiActive = false;
 volatile bool screenActive = true;
+
+// 🆕 VARIABLE PARA RETARDO DE INICIO
+volatile bool countdownActive = false;
+uint32_t countdownStartTime = 0;
+const uint32_t COUNTDOWN_DELAY_MS = 2000; // 2 segundos
 
 uint32_t lastPacketTime = 0;
 uint32_t t0_us = 0;
@@ -50,6 +52,21 @@ uint32_t progressStartTime = 0;
 float lastStopTime = -1.0;
 
 // ============================================================================
+// DECLARACIONES DE FUNCIONES
+// ============================================================================
+void toneStart(int freq = 2000, int ms = 120);
+void showStatusScreen(float s = -1, bool showTime = false);
+void showCountdownScreen();
+void startStage();
+void stopStage(uint32_t t_hit);
+void resetStage();
+void returnToReady();
+void showResetProgress();
+void handleButton();
+void debugButtonState();
+void handleStandby();
+
+// ============================================================================
 // DEBUG DEL BOTÓN - PARA DIAGNÓSTICO
 // ============================================================================
 void debugButtonState() {
@@ -63,32 +80,67 @@ void debugButtonState() {
 }
 
 // ============================================================================
-// GESTIÓN DEL BOTÓN CORREGIDA
+// GESTIÓN DEL BOTÓN
 // ============================================================================
-
 void handleButton() {
     bool currentState = digitalRead(PIN_START);
-    
-    // 🆕 DEBUG EN TIEMPO REAL
-    static uint32_t lastStateChange = 0;
-    if (currentState != lastButtonState) {
-        lastStateChange = millis();
-        Serial.printf("🔄 Cambio estado: %s -> %s\n", 
-                     lastButtonState ? "HIGH" : "LOW", 
-                     currentState ? "HIGH" : "LOW");
-    }
     
     // Detección de reactivación cuando pantalla está apagada
     if (!screenActive && currentState == LOW) {
         Serial.println("👆 Reactivando pantalla desde standby");
         returnToReady();
-        delay(300); // Debounce más largo para botón físico
+        delay(300);
         return;
     }
     
-    // 🆕 DETECCIÓN MEJORADA DE FLANCOS
+    // BLOQUEAR PULSACIONES CORTAS SI HAY ÚLTIMO TIEMPO
+    if (finished && lastStopTime >= 0) {
+        // ⚠️ Solo permitir pulsación larga para reinicio
+        if (lastButtonState == HIGH && currentState == LOW) {
+            // Flanco descendente - botón presionado
+            pressStartTime = millis();
+            lastInteraction = millis();
+            screenActive = true;
+            Serial.println("🔽 BOTÓN PRESIONADO - Solo reinicio permitido");
+        }
+        
+        if (lastButtonState == LOW && currentState == HIGH) {
+            // Flanco ascendente - botón liberado
+            uint32_t duration = millis() - pressStartTime;
+            lastInteraction = millis();
+            screenActive = true;
+            
+            Serial.printf("🔼 BOTÓN LIBERADO - Duración: %lu ms\n", duration);
+            
+            if (showingProgress) {
+                Serial.println("⏹️ Liberado durante progreso - ignorar");
+                return;
+            }
+            
+            // BLOQUEAR PULSACIONES CORTAS
+            if (duration > 100 && duration < 1000) {
+                Serial.println("❌ Pulsación corta BLOQUEADA - Solo reinicio permitido");
+                toneStart(500, 100); // Feedback de error
+                return;
+            }
+        }
+        
+        // DETECCIÓN DE PULSACIÓN LARGA
+        if (currentState == LOW && !showingProgress) {
+            uint32_t pressDuration = millis() - pressStartTime;
+            
+            if (pressDuration > 1000 && pressDuration < 1500) {
+                Serial.println("📊 Iniciando barra de progreso para reinicio");
+                showResetProgress();
+            }
+        }
+        
+        lastButtonState = currentState;
+        return;
+    }
+    
+    // COMPORTAMIENTO NORMAL (solo si no hay último tiempo)
     if (lastButtonState == HIGH && currentState == LOW) {
-        // Flanco descendente - botón presionado
         pressStartTime = millis();
         lastInteraction = millis();
         screenActive = true;
@@ -96,21 +148,18 @@ void handleButton() {
     }
     
     if (lastButtonState == LOW && currentState == HIGH) {
-        // Flanco ascendente - botón liberado
         uint32_t duration = millis() - pressStartTime;
         lastInteraction = millis();
         screenActive = true;
         
         Serial.printf("🔼 BOTÓN LIBERADO - Duración: %lu ms\n", duration);
         
-        // Si estaba mostrando progreso, ya se manejó en showResetProgress()
         if (showingProgress) {
             Serial.println("⏹️ Liberado durante progreso - ignorar");
             return;
         }
         
-        // Procesar pulsaciones normales (evitar rebotes)
-        if (duration > 100 && duration < 1000) { // 🔧 Aumentado debounce
+        if (duration > 100 && duration < 1000) {
             if (!running && !finished) {
                 Serial.println("🚀 SHORT PRESS - Iniciando stage");
                 startStage();
@@ -124,24 +173,13 @@ void handleButton() {
         }
     }
     
-    // 🆕 DETECCIÓN MEJORADA DE PULSACIÓN LARGA
+    // DETECCIÓN DE PULSACIÓN LARGA
     if (currentState == LOW && !showingProgress) {
         uint32_t pressDuration = millis() - pressStartTime;
         
-        // Informar progreso de pulsación larga
         if (pressDuration > 1000 && pressDuration < 1500) {
             Serial.println("📊 Iniciando barra de progreso para reinicio");
             showResetProgress();
-        }
-        
-        // Feedback cada segundo durante pulsación larga
-        if (pressDuration > 1000) {
-            static uint32_t lastFeedback = 0;
-            if (millis() - lastFeedback > 1000) {
-                lastFeedback = millis();
-                Serial.printf("⏳ Mantenido: %lu/%lu segundos\n", 
-                             pressDuration/1000, LONG_PRESS_MS/1000);
-            }
         }
     }
     
@@ -149,9 +187,8 @@ void handleButton() {
 }
 
 // ============================================================================
-// FUNCIONES DE PANTALLA (optimizadas)
+// FUNCIONES DE PANTALLA
 // ============================================================================
-
 void initDisplay() {
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("❌ Error inicializando SSD1306"));
@@ -176,7 +213,40 @@ void showWelcomeScreen() {
   delay(2000);
 }
 
-void showStatusScreen(float s = -1, bool showTime = false) {
+// 🆕 FUNCIÓN PARA MOSTRAR CUENTA REGRESIVA
+void showCountdownScreen() {
+  display.clearDisplay();
+  
+  // Header
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(F("Bat:"));
+  display.print((int)batteryPercent);
+  display.print(F("%"));
+  
+  display.setCursor(SCREEN_WIDTH - 25, 0);
+  display.print(wifiActive ? F("OK") : F("NO"));
+  
+  display.setCursor(50, 0);
+  display.print(F("PREPARE!"));
+  
+  display.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
+  
+  // Contador regresivo grande
+  display.setTextSize(3);
+  display.setCursor(50, 25);
+  
+  uint32_t elapsed = millis() - countdownStartTime;
+  uint32_t remaining = COUNTDOWN_DELAY_MS - elapsed;
+  int seconds = (remaining / 1000) + 1;
+  
+  display.print(seconds);
+  
+  display.display();
+  screenActive = true;
+}
+
+void showStatusScreen(float s, bool showTime) {
   display.clearDisplay();
   
   // Header
@@ -227,16 +297,35 @@ void showStatusScreen(float s = -1, bool showTime = false) {
 }
 
 // ============================================================================
-// FUNCIONES PRINCIPALES (mantenemos igual)
+// FUNCIONES PRINCIPALES
 // ============================================================================
-
 float readBatteryPercent() {
-  // ... (tu código existente)
+  int rawValue = analogRead(PIN_BATTERY);
+  // Calibración para batería LiPo 3.7V
+  float voltage = (rawValue / 4095.0) * 3.3 * 2;
+  batteryPercent = map(constrain(voltage, 3.2, 4.2), 3.2, 4.2, 0, 100);
   return batteryPercent;
 }
 
-void toneStart(int freq = 2000, int ms = 120) {
-  tone(PIN_BUZZER, freq, ms);
+// 🆕 FUNCIÓN toneStart CORREGIDA
+void toneStart(int freq, int ms) {
+  // ALTERNATIVA SIMPLE PARA BUZZER PASIVO
+  if (freq == 0) {
+    digitalWrite(PIN_BUZZER, LOW);
+    return;
+  }
+  
+  int period = 1000000L / freq; // Periodo en microsegundos
+  int pulse = period / 2;       // Medio periodo para el duty cycle 50%
+  
+  uint32_t startTime = micros();
+  
+  while (micros() - startTime < ms * 1000L) {
+    digitalWrite(PIN_BUZZER, HIGH);
+    delayMicroseconds(pulse);
+    digitalWrite(PIN_BUZZER, LOW);
+    delayMicroseconds(pulse);
+  }
 }
 
 void sendSync() {
@@ -334,14 +423,15 @@ void startStage() {
     WiFi.softAP(ssid, password);
   }
   sendSync();
-  toneStart(1000, 80); 
-  delay(150);
-  toneStart(2000, 140);
-  t0_us = micros();
-  running = true;
-  lastUpdate = millis();
+  
+  // 🆕 INICIAR CONTADOR REGRESIVO SIN PITIDOS
+  countdownActive = true;
+  countdownStartTime = millis();
   lastInteraction = millis();
   screenActive = true;
+  
+  Serial.println("⏱️ Iniciando cuenta regresiva de 2 segundos...");
+  showCountdownScreen();
 }
 
 void stopStage(uint32_t t_hit) {
@@ -349,22 +439,24 @@ void stopStage(uint32_t t_hit) {
   finished = true;
   float s = (t_hit - t0_us) / 1000000.0f;
   lastStopTime = s;
-  toneStart(1500, 60); 
-  delay(60);
-  toneStart(800, 120);
   showStatusScreen(s, true);
 }
 
 void resetStage() {
   running = false;
   finished = false;
+  countdownActive = false;
+  lastStopTime = -1.0;
   if (WiFi.softAPgetStationNum() > 0) {
     WiFi.disconnect(true);
   }
   wifiActive = false;
+  
+  // 🆕 SONIDOS ORIGINALES DEL RESET
   toneStart(1000, 80); 
   delay(80);
   toneStart(1500, 80);
+  
   lastInteraction = millis();
   screenActive = true;
   showStatusScreen();
@@ -400,7 +492,7 @@ void handleStandby() {
                 display.println(F("Zz"));
                 display.setTextSize(1);
                 display.setCursor(35, 45);
-                display.println(F("Display off"));
+                display.println(F("Modo reposo"));
             }
             display.display();
             visible = !visible;
@@ -423,7 +515,31 @@ void handleStandby() {
 void loop() {
     uint32_t currentTime = millis();
     
-    // 🆕 DEBUG ACTIVADO - Comenta esta línea cuando funcione
+    // 🆕 VERIFICAR SI ESTAMOS EN CUENTA REGRESIVA
+    if (countdownActive) {
+        uint32_t elapsed = currentTime - countdownStartTime;
+        
+        // Actualizar pantalla de cuenta regresiva
+        if (currentTime - lastUpdate >= 100) {
+            lastUpdate = currentTime;
+            showCountdownScreen();
+        }
+        
+        // 🆕 CUANDO TERMINA LA CUENTA REGRESIVA, INICIAR EL STAGE CON PITIDO
+        if (elapsed >= COUNTDOWN_DELAY_MS) {
+            countdownActive = false;
+            running = true;
+            t0_us = micros();
+            lastUpdate = currentTime;
+            toneStart(2000, 200); // 🆕 PITIDO DE INICIO DE STAGE
+            Serial.println("🚀 CRONÓMETRO INICIADO!");
+        }
+        
+        delay(10);
+        return;
+    }
+    
+    // DEBUG ACTIVADO - Comenta esta línea cuando funcione
     debugButtonState();
     
     handleButton();
@@ -450,21 +566,40 @@ void loop() {
         int len = udp.read(msg, 64);
         if (len > 0) {
             msg[len] = '\0';
+            
+            // DEPURACIÓN
+            Serial.printf("📦 PAQUETE RECIBIDO: %s\n", msg);
+            
             if (strncmp(msg, "HIT:", 4) == 0 && running && !finished) {
                 char* p = msg + 4;
                 int id = atoi(strtok(p, ":"));
                 uint32_t t_hit = strtoul(strtok(NULL, ":"), nullptr, 10);
                 uint16_t seq = atoi(strtok(NULL, ":"));
                 float s = (t_hit - t0_us) / 1000000.0f;
+                
+                Serial.printf("🎯 HIT PROCESADO - ID: %d, Tiempo: %.3f s\n", id, s);
                 showStatusScreen(s, true);
-                if (id == STOP_ID) {
-                    stopStage(t_hit);
+                
+                // 🆕 PITIDOS DIFERENCIADOS SEGÚN EL ID
+                if (id == 99) {
+                    // STOP PLATE - Pitido especial
+                    toneStart(1800, 300);
+                    Serial.println("🛑 STOP PLATE - Stage finalizado");
+                } else {
+                    // HIT NORMAL - Pitido normal
+                    toneStart(1500, 150);
+                    Serial.printf("🎯 HIT RECIBIDO - ID %d\n", id);
                 }
+                
+                stopStage(t_hit);
+                
+                // Enviar ACK
                 char ack[16];
                 snprintf(ack, sizeof(ack), "ACK:%u", seq);
                 udp.beginPacket(udp.remoteIP(), PORT);
                 udp.write((uint8_t*)ack, strlen(ack));
                 udp.endPacket();
+                Serial.printf("📤 ACK enviado: %s\n", ack);
             }
         }
     }
@@ -475,8 +610,9 @@ void loop() {
 
 void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW); // Asegurar que empiece apagado
   
-  // 🔧 CONFIGURACIÓN MEJORADA DEL BOTÓN
+  // CONFIGURACIÓN DEL BOTÓN
   Serial.begin(115200);
   Serial.println("🎯 Iniciando Air Timer - DEBUG ACTIVADO");
   Serial.println("🔘 Configurando botón BOOT/EN...");

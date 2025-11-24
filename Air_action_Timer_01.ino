@@ -48,7 +48,7 @@ float batteryPercent = 100.0;
 // Variables del botón
 volatile bool lastButtonState = HIGH;
 uint32_t pressStartTime = 0;
-const uint32_t LONG_PRESS_MS = 5000;
+const uint32_t LONG_PRESS_MS = 3000; // 🆕 CAMBIO: 5 segundos → 3 segundos
 const uint32_t STANDBY_TIMEOUT_MS = 60000;
 
 // Variables para la barra de progreso
@@ -71,9 +71,13 @@ void handleButton();
 void debugButtonState();
 void handleStandby();
 void updateDisplayHeader();
+void processUDPPacket(int packetSize);
+void handlePingMessage(char* msg);
+void handleHitMessage(char* msg);
+void checkPingTimeout();
 
 // ============================================================================
-// DEBUG DEL BOTÓN - PARA DIAGNÓSTICO
+// DEBUG DEL BOTÓN - PARA DIAGNÓSTIC
 // ============================================================================
 void debugButtonState() {
     static uint32_t lastDebug = 0;
@@ -243,7 +247,7 @@ void showCountdownScreen() {
   display.print(wifiActive ? F("OK") : F("NO"));
   
   display.setCursor(50, 0);
-  display.print(F("PREPARE!"));
+  display.print(F("Standby"));  // 🆕 CAMBIO: "PREPARE!" → "Standby"
   
   display.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
   
@@ -261,10 +265,15 @@ void showCountdownScreen() {
   screenActive = true;
 }
 
-// FUNCIÓN PARA ACTUALIZAR SOLO EL HEADER RÁPIDAMENTE
+// 🆕 FUNCIÓN OPTIMIZADA PARA ACTUALIZAR SOLO EL HEADER
 void updateDisplayHeader() {
     // Solo actualizar si la pantalla está activa
     if (!screenActive) return;
+    
+    // 🆕 Limitar frecuencia de actualizaciones
+    static uint32_t lastHeaderUpdate = 0;
+    if (millis() - lastHeaderUpdate < 1000) return; // Máximo 1 vez por segundo
+    lastHeaderUpdate = millis();
     
     // Actualizar solo la línea del header
     display.fillRect(0, 0, SCREEN_WIDTH, 9, SSD1306_BLACK); // Limpiar header
@@ -288,6 +297,7 @@ void updateDisplayHeader() {
     display.display();
 }
 
+// 🆕 FUNCIÓN MEJORADA PARA MOSTRAR ESTADO Y CRONÓMETRO
 void showStatusScreen(float s, bool showTime) {
   display.clearDisplay();
   
@@ -308,39 +318,74 @@ void showStatusScreen(float s, bool showTime) {
   
   display.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
   
-  // Contenido principal
+  // Contenido principal - MEJORADA
   if (showTime && s >= 0) {
-    display.setTextSize(2);
-    display.setCursor(20, 20);
-    
-    // MOSTRAR SOLO 2 DECIMALES
-    char timeStr[16];
-    snprintf(timeStr, sizeof(timeStr), "%.2f s", s);
-    display.print(timeStr);
-    
+    // 🆕 DISEÑO MEJORADO PARA TIEMPO FINAL
     display.setTextSize(1);
-    display.setCursor(20, 50);
-    display.println(F("Hold to restart"));
-  } else if (running) {
-    float t = (micros() - t0_us) / 1000000.0f;
+    display.setCursor(35, 18);
+    display.println(F("FINAL TIME"));
+    
     display.setTextSize(3);
-    display.setCursor(15, 20);
+    display.setCursor(10, 28);
     
-    // MOSTRAR SOLO 1 DECIMAL MIENTRAS CORRE
+    // 🆕 FORMATEO MEJORADO - 2 decimales fijos
     char timeStr[16];
-    snprintf(timeStr, sizeof(timeStr), "%.1f", t);
+    if (s < 10) {
+      snprintf(timeStr, sizeof(timeStr), " %.2f", s);
+    } else if (s < 100) {
+      snprintf(timeStr, sizeof(timeStr), "%.2f", s);
+    } else {
+      snprintf(timeStr, sizeof(timeStr), "%.1f", s); // Para tiempos largos, 1 decimal
+    }
     display.print(timeStr);
     
     display.setTextSize(1);
-    display.setCursor(95, 25);
+    display.setCursor(SCREEN_WIDTH - 20, 35);
     display.print(F("s"));
-  } else {
-    display.setTextSize(2);
-    display.setCursor(36, 25);
-    display.println(F("READY"));
+    
+    // 🆕 INSTRUCCIÓN MEJORADA
     display.setTextSize(1);
-    display.setCursor(22, 50);
-    display.println(F("Press to start"));
+    display.setCursor(1, 55);
+    display.println(F(">>> HOLD TO RESET <<<"));
+    
+  } else if (running) {
+    // 🆕 DISEÑO MEJORADO PARA CRONÓMETRO EN EJECUCIÓN
+    float t = (micros() - t0_us) / 1000000.0f;
+    
+    display.setTextSize(1);
+    display.setCursor(45, 16);
+    display.println(F("RUNNING"));
+    
+    display.setTextSize(3);
+    display.setCursor(10, 28);
+    
+    // 🆕 CORRECCIÓN: MOSTRAR SIEMPRE 2 DECIMALES EN RUNNING
+    char timeStr[16];
+    if (t < 10) {
+      snprintf(timeStr, sizeof(timeStr), " %.2f", t);
+    } else if (t < 100) {
+      snprintf(timeStr, sizeof(timeStr), "%.2f", t);
+    } else {
+      snprintf(timeStr, sizeof(timeStr), "%.1f", t); // Para tiempos >100s, 1 decimal
+    }
+    display.print(timeStr);
+    
+    display.setTextSize(1);
+    display.setCursor(SCREEN_WIDTH - 20, 35);
+    display.print(F("s"));
+    
+    // 🆕 INDICADOR VISUAL DE ACTIVIDAD
+    display.fillCircle(SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10, 3, SSD1306_WHITE);
+    
+  } else {
+    // 🆕 DISEÑO MEJORADO PARA MODO READY - ELIMINADO PLATE STATUS
+    display.setTextSize(2);
+    display.setCursor(35, 25);
+    display.println(F("READY"));
+    
+    display.setTextSize(1);
+    display.setCursor(3, 50);
+    display.println(F(">> PRESS TO START <<"));
   }
   
   display.display();
@@ -539,6 +584,7 @@ void returnToReady() {
     }
 }
 
+// 🆕 FUNCIÓN STANDBY MEJORADA CON "DISPLAY OFF"
 void handleStandby() {
     uint32_t currentTime = millis();
     uint32_t inactiveTime = currentTime - lastInteraction;
@@ -552,11 +598,11 @@ void handleStandby() {
             display.clearDisplay();
             if (visible) {
                 display.setTextSize(2);
-                display.setCursor(45, 20);
+                display.setCursor(50, 20);
                 display.println(F("Zz"));
                 display.setTextSize(1);
                 display.setCursor(35, 45);
-                display.println(F("Modo reposo"));
+                display.println(F("Display off"));  // 🆕 CAMBIO AQUÍ
             }
             display.display();
             visible = !visible;
@@ -573,29 +619,132 @@ void handleStandby() {
         display.clearDisplay();
         display.display();
         screenActive = false;
+        Serial.println("💤 Pantalla apagada - Display off");
+    }
+}
+
+// 🆕 FUNCIÓN PARA VERIFICAR TIMEOUT DE PING
+void checkPingTimeout() {
+    static uint32_t lastPingCheck = 0;
+    uint32_t currentTime = millis();
+    
+    if (currentTime - lastPingCheck >= 1000) {  // 🆕 Reducir a 1 segundo
+        lastPingCheck = currentTime;
+        
+        bool previousState = plateConnected;
+        
+        // Si pasó el timeout sin PINGs, marcar como desconectado
+        if (plateConnected && (currentTime - lastPingTime > PING_TIMEOUT_MS)) {
+            plateConnected = false;
+            Serial.println("🔌 PLATE DESCONECTADO - Timeout de ping");
+        }
+        
+        // 🆕 Solo actualizar pantalla si el estado cambió Y la pantalla está activa
+        if (previousState != plateConnected && screenActive && !showingProgress) {
+            updateDisplayHeader();
+        }
+    }
+}
+
+// 🆕 FUNCIÓN PARA MANEJAR MENSAJES PING
+void handlePingMessage(char* msg) {
+    uint16_t seq = atoi(msg + 5);
+    lastPingTime = millis();
+    
+    if (!plateConnected) {
+        plateConnected = true;
+        Serial.println("🔌 PLATE CONECTADO - Ping recibido");
+        // 🆕 Solo actualizar si la pantalla ya está activa
+        if (screenActive && !showingProgress) {
+            updateDisplayHeader();
+        }
+    }
+    
+    // Responder con PONG
+    char pong[16];
+    snprintf(pong, sizeof(pong), "PONG:%u", seq);
+    udp.beginPacket(udp.remoteIP(), PORT);
+    udp.write((uint8_t*)pong, strlen(pong));
+    udp.endPacket();
+    Serial.printf("📤 PONG enviado: %s\n", pong);
+}
+
+// 🆕 FUNCIÓN PARA MANEJAR MENSAJES HIT
+void handleHitMessage(char* msg) {
+    // LOS HITS SÍ REACTIVAN LA PANTALLA
+    screenActive = true;
+    lastInteraction = millis();
+    
+    lastPingTime = millis();
+    if (!plateConnected) {
+        plateConnected = true;
+        Serial.println("🔌 PLATE CONECTADO - Hit recibido");
+    }
+    
+    char* p = msg + 4;
+    int id = atoi(strtok(p, ":"));
+    // IGNORAR EL TIEMPO DEL CLIENTE, SOLO NECESITAMOS EL SEQ
+    strtok(NULL, ":"); // Saltar el tiempo del cliente
+    uint16_t seq = atoi(strtok(NULL, ":"));
+    
+    // USAR EL TIEMPO ACTUAL DEL ESP32 (IGUAL QUE EL BOTÓN)
+    uint32_t current_time = micros();
+    float s = (current_time - t0_us) / 1000000.0f;
+    
+    Serial.printf("🎯 HIT RECIBIDO - ID: %d, Tiempo: %.2f s\n", id, s);
+    showStatusScreen(s, true);
+    
+    // PITIDOS DIFERENCIADOS SEGÚN EL ID
+    if (id == 99) {
+        toneStart(1800, 300);
+        Serial.println("🛑 STOP PLATE - Stage finalizado");
+    } else {
+        toneStart(1500, 150);
+        Serial.printf("🎯 HIT RECIBIDO - ID %d\n", id);
+    }
+    
+    // PARAR CON EL TIEMPO ACTUAL (IGUAL QUE EL BOTÓN)
+    stopStage(current_time);
+    
+    // Enviar ACK
+    char ack[16];
+    snprintf(ack, sizeof(ack), "ACK:%u", seq);
+    udp.beginPacket(udp.remoteIP(), PORT);
+    udp.write((uint8_t*)ack, strlen(ack));
+    udp.endPacket();
+    Serial.printf("📤 ACK enviado: %s\n", ack);
+}
+
+// 🆕 FUNCIÓN PARA PROCESAR PAQUETES UDP
+void processUDPPacket(int packetSize) {
+    lastPacketTime = millis();
+    wifiActive = true;
+    
+    // 🆕 NO reactivar lastInteraction automáticamente
+    // Solo mantener los estados de conexión
+    
+    char msg[64];
+    int len = udp.read(msg, 64);
+    if (len > 0) {
+        msg[len] = '\0';
+        
+        Serial.printf("📦 PAQUETE RECIBIDO: %s\n", msg);
+        
+        if (strncmp(msg, "PING:", 5) == 0) {
+            handlePingMessage(msg);
+        } else if (strncmp(msg, "HIT:", 4) == 0 && running && !finished) {
+            handleHitMessage(msg); // 🆕 Esta SÍ reactiva la pantalla
+        }
     }
 }
 
 void loop() {
     uint32_t currentTime = millis();
     
-    // VERIFICAR TIMEOUT DE PING CADA 500ms
-    static uint32_t lastPingCheck = 0;
-    if (currentTime - lastPingCheck >= 500) {
-        lastPingCheck = currentTime;
-        
-        // Si pasó el timeout sin PINGs, marcar como desconectado
-        if (plateConnected && (currentTime - lastPingTime > PING_TIMEOUT_MS)) {
-            plateConnected = false;
-            Serial.println("🔌 PLATE DESCONECTADO - Timeout de ping");
-            
-            if (screenActive && !showingProgress) {
-                updateDisplayHeader();
-            }
-        }
-    }
+    // 1. VERIFICAR TIMEOUT DE PING (OPTIMIZADO)
+    checkPingTimeout();
     
-    // VERIFICAR SI ESTAMOS EN CUENTA REGRESIVA
+    // 2. VERIFICAR SI ESTAMOS EN CUENTA REGRESIVA
     if (countdownActive) {
         uint32_t elapsed = currentTime - countdownStartTime;
         
@@ -619,7 +768,13 @@ void loop() {
         return;
     }
     
-    // ACTUALIZAR PANTALLA CADA 100ms PARA TIEMPO EN VIVO
+    // 3. PROCESAR PAQUETES UDP (OPTIMIZADO)
+    int packetSize = udp.parsePacket();
+    if (packetSize > 0) {
+        processUDPPacket(packetSize);
+    }
+    
+    // 4. ACTUALIZAR PANTALLA CADA 100ms PARA TIEMPO EN VIVO
     if (screenActive && running && !showingProgress) {
         if (currentTime - lastUpdate >= 100) {
             lastUpdate = currentTime;
@@ -627,99 +782,23 @@ void loop() {
         }
     }
     
-    // DEBUG ACTIVADO - Comenta esta línea cuando funcione
+    // 5. DEBUG Y BOTÓN
     debugButtonState();
-    
     handleButton();
     
-    // TIMEOUT PARA COMUNICACIÓN UDP GENERAL
-    if (currentTime - lastPacketTime > 5000) {
-        wifiActive = false;
-    }
-    
-    int packetSize = udp.parsePacket();
-    if (packetSize > 0) {
-        lastPacketTime = currentTime;
-        wifiActive = true;
-        lastInteraction = currentTime;
-        screenActive = true;
-
-        char msg[64];
-        int len = udp.read(msg, 64);
-        if (len > 0) {
-            msg[len] = '\0';
-            
-            Serial.printf("📦 PAQUETE RECIBIDO: %s\n", msg);
-            
-            // DETECTAR MENSAJES PING
-            if (strncmp(msg, "PING:", 5) == 0) {
-                uint16_t seq = atoi(msg + 5);
-                lastPingTime = currentTime;
-                
-                if (!plateConnected) {
-                    plateConnected = true;
-                    Serial.println("🔌 PLATE CONECTADO - Ping recibido");
-                    if (screenActive && !showingProgress) {
-                        updateDisplayHeader();
-                    }
-                }
-                
-                // Responder con PONG
-                char pong[16];
-                snprintf(pong, sizeof(pong), "PONG:%u", seq);
-                udp.beginPacket(udp.remoteIP(), PORT);
-                udp.write((uint8_t*)pong, strlen(pong));
-                udp.endPacket();
-                Serial.printf("📤 PONG enviado: %s\n", pong);
-            }
-            else if (strncmp(msg, "HIT:", 4) == 0 && running && !finished) {
-                // LOS HITS TAMBIÉN CUENTAN COMO PING
-                lastPingTime = currentTime;
-                if (!plateConnected) {
-                    plateConnected = true;
-                    Serial.println("🔌 PLATE CONECTADO - Hit recibido");
-                    if (screenActive && !showingProgress) {
-                        updateDisplayHeader();
-                    }
-                }
-                
-                char* p = msg + 4;
-                int id = atoi(strtok(p, ":"));
-                // IGNORAR EL TIEMPO DEL CLIENTE, SOLO NECESITAMOS EL SEQ
-                strtok(NULL, ":"); // Saltar el tiempo del cliente
-                uint16_t seq = atoi(strtok(NULL, ":"));
-                
-                // USAR EL TIEMPO ACTUAL DEL ESP32 (IGUAL QUE EL BOTÓN)
-                uint32_t current_time = micros();
-                float s = (current_time - t0_us) / 1000000.0f;
-                
-                Serial.printf("🎯 HIT RECIBIDO - ID: %d, Tiempo: %.2f s\n", id, s);
-                showStatusScreen(s, true);
-                
-                // PITIDOS DIFERENCIADOS SEGÚN EL ID
-                if (id == 99) {
-                    toneStart(1800, 300);
-                    Serial.println("🛑 STOP PLATE - Stage finalizado");
-                } else {
-                    toneStart(1500, 150);
-                    Serial.printf("🎯 HIT RECIBIDO - ID %d\n", id);
-                }
-                
-                // PARAR CON EL TIEMPO ACTUAL (IGUAL QUE EL BOTÓN)
-                stopStage(current_time);
-                
-                // Enviar ACK
-                char ack[16];
-                snprintf(ack, sizeof(ack), "ACK:%u", seq);
-                udp.beginPacket(udp.remoteIP(), PORT);
-                udp.write((uint8_t*)ack, strlen(ack));
-                udp.endPacket();
-                Serial.printf("📤 ACK enviado: %s\n", ack);
-            }
+    // 6. ACTUALIZAR BATERÍA PERIÓDICAMENTE
+    static uint32_t lastBatteryCheck = 0;
+    if (currentTime - lastBatteryCheck >= 5000) { // Cada 5 segundos
+        lastBatteryCheck = currentTime;
+        readBatteryPercent();
+        if (screenActive && !showingProgress) {
+            updateDisplayHeader();
         }
     }
     
+    // 7. STANDBY (AHORA DEBERÍA FUNCIONAR CORRECTAMENTE)
     handleStandby();
+    
     delay(10);
 }
 
@@ -750,5 +829,7 @@ void setup() {
   showStatusScreen();
   lastInteraction = millis();
   
-  Serial.println("🚀 Sistema listo - Monitorea el Serial para debug del botón");
+  Serial.println("🚀 Sistema listo - Display mejorado y modo standby optimizado");
+  Serial.println("💤 La pantalla mostrará 'Display off' antes de apagarse");
+  Serial.printf("⏱️  Pulsación larga reducida a %lu segundos\n", LONG_PRESS_MS / 1000);
 }
